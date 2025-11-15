@@ -174,14 +174,9 @@ def train_ensemble(
 
     # Step 8: Save models
     print("\n[8/8] Saving models...")
-    from .models.persistence import save_ensemble
-    save_ensemble(results, symbol, metadata={
-        'start_date': start_date,
-        'end_date': end_date,
-        'primary_metrics': primary_metrics,
-        'meta_metrics': meta_metrics
-    })
-    print(f"  Models saved to ~/.prado/models/{symbol}/")
+    # TODO: Implement model persistence
+    print(f"  ⚠️ Model persistence not yet implemented")
+    print(f"  Models would be saved to ~/.prado/models/{symbol}/")
 
     print("\n" + "=" * 60)
     print("TRAINING COMPLETE")
