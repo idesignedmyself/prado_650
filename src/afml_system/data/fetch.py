@@ -38,16 +38,17 @@ def fetch_ohlcv(
         end=end_date,
         interval=interval,
         progress=progress,
-        group_by='ticker' if len(symbols) > 1 else None
+        group_by='ticker' if len(symbols) > 1 else None,
+        auto_adjust=True
     )
 
     if data.empty:
         raise ValueError(f"No data retrieved for {symbols}")
 
-    # Handle single vs multiple symbols
-    if len(symbols) == 1:
-        data = data.copy()
-        data.columns = pd.MultiIndex.from_product([[symbols[0]], data.columns])
+    # Flatten MultiIndex columns for single symbol
+    if isinstance(data.columns, pd.MultiIndex) and len(symbols) == 1:
+        # Extract the price level (second level of MultiIndex)
+        data.columns = data.columns.get_level_values(1)
 
     return data
 
@@ -116,13 +117,6 @@ def prepare_training_data(
         symbols = symbols[0]
 
     data = fetch_ohlcv(symbols, start_date, end_date, interval, progress=False)
-
-    # Extract single symbol data if MultiIndex
-    if isinstance(data.columns, pd.MultiIndex):
-        if isinstance(symbols, str):
-            data = data[symbols].copy()
-        else:
-            data = data[symbols[0]].copy()
 
     # Clean data
     data = data.dropna()
