@@ -173,27 +173,15 @@ def train_ensemble(
     results['strategy_metrics'] = {name: metrics for name, (_, metrics) in strategy_models_dict.items()}
 
     # Step 8: Save models
-    if save_models:
-        print("\n[8/8] Saving models...")
-        persistence = ModelPersistence(models_dir)
-
-        persistence.save_model(
-            primary_model,
-            'primary_model',
-            metadata={
-                'symbols': symbols,
-                'start_date': start_date,
-                'end_date': end_date,
-                'metrics': primary_metrics
-            }
-        )
-
-        persistence.save_model(meta_model, 'meta_model', metadata=meta_metrics)
-
-        for name, model in results['strategy_models'].items():
-            persistence.save_model(model, f'strategy_{name}')
-
-        print(f"  Models saved to {models_dir}")
+    print("\n[8/8] Saving models...")
+    from .models.persistence import save_ensemble
+    save_ensemble(results, symbol, metadata={
+        'start_date': start_date,
+        'end_date': end_date,
+        'primary_metrics': primary_metrics,
+        'meta_metrics': meta_metrics
+    })
+    print(f"  Models saved to ~/.prado/models/{symbol}/")
 
     print("\n" + "=" * 60)
     print("TRAINING COMPLETE")
