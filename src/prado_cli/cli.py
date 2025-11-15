@@ -23,65 +23,27 @@ app = typer.Typer(
 
 @app.command()
 def train(
-    symbols: List[str] = typer.Option(
-        ["SPY"],
-        "--symbol",
-        "-s",
-        help="Symbols to train on"
-    ),
-    start_date: str = typer.Option(
-        "2020-01-01",
-        "--start",
-        help="Start date (YYYY-MM-DD)"
-    ),
-    end_date: str = typer.Option(
-        "2023-12-31",
-        "--end",
-        help="End date (YYYY-MM-DD)"
-    ),
-    config_file: Optional[str] = typer.Option(
-        None,
-        "--config",
-        "-c",
-        help="Path to config file"
-    ),
-    models_dir: str = typer.Option(
-        "models",
-        "--models-dir",
-        "-m",
-        help="Directory to save models"
-    ),
-    verbose: bool = typer.Option(
-        True,
-        "--verbose",
-        "-v",
-        help="Verbose output"
-    )
+    symbol: str = typer.Argument(..., help="Symbol to train on (e.g., SPY, QQQ)"),
+    start: Optional[str] = typer.Option(None, "--start", help="Start date (YYYY-MM-DD)"),
+    end: Optional[str] = typer.Option(None, "--end", help="End date (YYYY-MM-DD)"),
+    timeframe: str = typer.Option("1d", "--timeframe", help="Data timeframe (1d, 1h, etc.)"),
 ):
     """
-    Train PRADO9 ensemble models.
+    Train PRADO9 ensemble for a symbol.
 
     Example:
-        prado9 train -s SPY -s QQQ --start 2020-01-01 --end 2023-12-31
+        prado train QQQ
+        prado train SPY --start 2020-01-01 --end 2023-12-31
     """
-    typer.echo("🚀 Starting PRADO9 training...")
-
-    # Load config
-    if config_file:
-        config_manager = ConfigManager(config_file)
-        config = config_manager.config
-    else:
-        config = None
+    typer.echo(f"🚀 Starting PRADO9 training for {symbol.upper()}...")
 
     try:
         # Train ensemble
         results = train_ensemble(
-            symbols=symbols,
-            start_date=start_date,
-            end_date=end_date,
-            config=config,
-            save_models=True,
-            models_dir=models_dir
+            symbol=symbol,
+            start_date=start,
+            end_date=end,
+            timeframe=timeframe
         )
 
         typer.echo("\n✅ Training completed successfully!")
@@ -109,94 +71,32 @@ def train(
 
 @app.command()
 def predict(
-    symbol: str = typer.Option(
-        "SPY",
-        "--symbol",
-        "-s",
-        help="Symbol to predict"
-    ),
-    models_dir: str = typer.Option(
-        "models",
-        "--models-dir",
-        "-m",
-        help="Directory with trained models"
-    ),
-    lookback_days: int = typer.Option(
-        100,
-        "--lookback",
-        "-l",
-        help="Days of historical data for prediction"
-    )
+    symbol: str = typer.Argument(..., help="Symbol to predict (e.g., SPY, QQQ)"),
+    show_all: bool = typer.Option(False, "--show-all", help="Show all strategy details")
 ):
     """
-    Generate predictions using trained models.
+    Get ensemble prediction for a symbol.
 
     Example:
-        prado9 predict -s SPY --models-dir models
+        prado predict QQQ
+        prado predict SPY --show-all
     """
-    typer.echo("🔮 Generating PRADO9 predictions...")
+    typer.echo(f"🔮 Generating predictions for {symbol.upper()}...")
 
     try:
-        # Load models
-        persistence = ModelPersistence(models_dir)
-
-        if not persistence.model_exists('primary_model'):
-            typer.echo("❌ No trained models found. Run 'train' first.", err=True)
-            raise typer.Exit(code=1)
-
-        typer.echo(f"📂 Loading models from {models_dir}...")
-
-        models = {
-            'primary_model': persistence.load_model('primary_model'),
-            'meta_model': persistence.load_model('meta_model') if persistence.model_exists('meta_model') else None,
-            'strategy_models': {}
-        }
-
-        # Load strategy models
-        for model_name in persistence.list_models():
-            if model_name.startswith('strategy_'):
-                strategy = model_name.replace('strategy_', '')
-                models['strategy_models'][strategy] = persistence.load_model(model_name)
-
-        typer.echo(f"✅ Loaded {len(models['strategy_models'])} strategy models")
-
-        # Fetch recent data
-        from datetime import datetime, timedelta
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=lookback_days)
-
-        typer.echo(f"\n📊 Fetching data for {symbol}...")
-        data = fetch_ohlcv(
-            symbol,
-            start_date.strftime('%Y-%m-%d'),
-            end_date.strftime('%Y-%m-%d')
-        )
-
-        if isinstance(data.columns, pd.MultiIndex):
-            data = data[symbol]
-
         # Generate predictions
-        typer.echo("🤖 Generating predictions...")
-        predictions = predict_ensemble(data, models)
+        result = predict_ensemble(symbol=symbol)
 
-        # Display results
-        typer.echo("\n" + "=" * 60)
-        typer.echo("PREDICTION RESULTS")
-        typer.echo("=" * 60)
+        typer.echo("\n✅ Prediction completed!")
+        typer.echo(f"   Symbol: {symbol.upper()}")
+        typer.echo(f"   Final Position: {result['final_position']:.2f}")
+        typer.echo(f"   Confidence: {result['confidence']:.2%}")
+        typer.echo(f"   Active Strategies: {len(result['active_strategies'])}")
 
-        for _, row in predictions.iterrows():
-            signal = row['signal']
-            confidence = row['confidence']
-
-            signal_emoji = "📈" if signal > 0 else "📉" if signal < 0 else "➡️"
-            signal_text = "BUY" if signal > 0 else "SELL" if signal < 0 else "HOLD"
-
-            typer.echo(f"\n{signal_emoji} Signal: {signal_text}")
-            typer.echo(f"   Strength: {abs(signal):.2f}")
-            typer.echo(f"   Confidence: {confidence:.2%}")
-            typer.echo(f"   Strategies: {row['num_strategies']}")
-
-        typer.echo("\n" + "=" * 60)
+        if show_all and 'active_strategies' in result:
+            typer.echo("\n📊 Strategy Breakdown:")
+            for strategy in result['active_strategies']:
+                typer.echo(f"   - {strategy}")
 
     except Exception as e:
         typer.echo(f"\n❌ Error during prediction: {e}", err=True)
@@ -205,69 +105,33 @@ def predict(
 
 @app.command()
 def backtest(
-    symbols: List[str] = typer.Option(
-        ["SPY"],
-        "--symbol",
-        "-s",
-        help="Symbols to backtest"
-    ),
-    start_date: str = typer.Option(
-        "2020-01-01",
-        "--start",
-        help="Start date (YYYY-MM-DD)"
-    ),
-    end_date: str = typer.Option(
-        "2023-12-31",
-        "--end",
-        help="End date (YYYY-MM-DD)"
-    ),
-    method: str = typer.Option(
-        "simple",
-        "--method",
-        help="Backtest method (simple, walk_forward)"
-    ),
-    initial_capital: float = typer.Option(
-        100000,
-        "--capital",
-        help="Initial capital"
-    ),
-    models_dir: Optional[str] = typer.Option(
-        None,
-        "--models-dir",
-        "-m",
-        help="Directory with trained models (optional)"
-    )
+    symbol: str = typer.Argument(..., help="Symbol to backtest (e.g., SPY, QQQ)"),
+    comprehensive: bool = typer.Option(True, "--comprehensive", help="Run all 4 backtest methods"),
+    standard: bool = typer.Option(False, "--standard", help="Run standard backtest only"),
+    walk_forward: bool = typer.Option(False, "--walk-forward", help="Run walk-forward optimization"),
+    crisis: bool = typer.Option(False, "--crisis", help="Run crisis stress test"),
+    monte_carlo: bool = typer.Option(False, "--monte-carlo", help="Run Monte Carlo analysis"),
+    start: Optional[str] = typer.Option(None, "--start", help="Start date (YYYY-MM-DD)"),
 ):
     """
-    Run comprehensive backtest.
+    Run comprehensive backtest validation suite.
 
     Example:
-        prado9 backtest -s SPY --method walk_forward --capital 100000
+        prado backtest QQQ --comprehensive
+        prado backtest SPY --standard
+        prado backtest QQQ --start 2020-01-01
     """
-    typer.echo("📈 Starting PRADO9 backtest...")
+    typer.echo(f"📈 Starting backtest for {symbol.upper()}...")
 
     try:
-        # Load models if directory provided
-        models = None
-        if models_dir:
-            persistence = ModelPersistence(models_dir)
-            if persistence.model_exists('primary_model'):
-                typer.echo(f"📂 Loading models from {models_dir}...")
-                models = {
-                    'primary_model': persistence.load_model('primary_model')
-                }
-
-        # Run backtest
-        results = backtest_comprehensive(
-            symbols=symbols,
-            start_date=start_date,
-            end_date=end_date,
-            models=models,
-            method=method,
-            initial_capital=initial_capital
+        # Run comprehensive backtest
+        report = backtest_comprehensive(
+            symbol=symbol,
+            start_date=start
         )
 
-        typer.echo("\n✅ Backtest completed successfully!")
+        typer.echo("\n✅ Backtest completed!")
+        typer.echo(f"\n{report}")
 
     except Exception as e:
         typer.echo(f"\n❌ Error during backtest: {e}", err=True)
