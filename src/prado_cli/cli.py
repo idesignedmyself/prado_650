@@ -24,16 +24,16 @@ app = typer.Typer(
 @app.command()
 def train(
     symbol: str = typer.Argument(..., help="Symbol to train on (e.g., SPY, QQQ)"),
-    start: Optional[str] = typer.Option(None, "--start", help="Start date (YYYY-MM-DD)"),
-    end: Optional[str] = typer.Option(None, "--end", help="End date (YYYY-MM-DD)"),
+    start: str = typer.Argument(..., help="Start date (YYYY-MM-DD)"),
+    end: str = typer.Argument(..., help="End date (YYYY-MM-DD)"),
     timeframe: str = typer.Option("1d", "--timeframe", help="Data timeframe (1d, 1h, etc.)"),
 ):
     """
     Train PRADO9 ensemble for a symbol.
 
     Example:
-        prado train QQQ
-        prado train SPY --start 2020-01-01 --end 2023-12-31
+        prado train QQQ 2020-01-01 2024-12-31
+        prado train SPY 2020-01-01 2023-12-31 --timeframe 1h
     """
     typer.echo(f"🚀 Starting PRADO9 training for {symbol.upper()}...")
 
