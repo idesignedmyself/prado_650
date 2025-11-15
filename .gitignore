@@ -45,8 +45,10 @@ Thumbs.db
 
 # PRADO9 specific
 ~/.prado/
-models/
 *.pkl
+
+# Ignore trained models directory but not source code
+/models/
 *.joblib
 
 # Jupyter

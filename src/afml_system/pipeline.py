@@ -174,9 +174,22 @@ def train_ensemble(
 
     # Step 8: Save models
     print("\n[8/8] Saving models...")
-    # TODO: Implement model persistence
-    print(f"  ⚠️ Model persistence not yet implemented")
-    print(f"  Models would be saved to ~/.prado/models/{symbol}/")
+    from .models.persistence import save_ensemble
+
+    ensemble_path = save_ensemble(
+        symbol=symbol,
+        primary_model=primary_model,
+        meta_model=meta_model,
+        strategy_models=results['strategy_models'],
+        primary_metrics=primary_metrics,
+        meta_metrics=meta_metrics,
+        strategy_metrics=results['strategy_metrics']
+    )
+
+    print(f"  ✅ Models saved to: {ensemble_path}")
+    print(f"  - Primary model")
+    print(f"  - Meta model")
+    print(f"  - {len(results['strategy_models'])} strategy models")
 
     print("\n" + "=" * 60)
     print("TRAINING COMPLETE")
@@ -197,7 +210,6 @@ def predict_ensemble(
     Returns:
         Dictionary with prediction results
     """
-    from .config.manager import PRADO_HOME
     from .models.persistence import load_ensemble
     from datetime import datetime, timedelta
 
@@ -215,18 +227,32 @@ def predict_ensemble(
 
     # Detect current regime
     regimes = detect_all_regimes(data)
-    current_regime = regimes.iloc[-1]['composite_regime']
+    latest_regime = regimes.iloc[-1]
 
-    # Get predictions from strategy models
-    from .strategies.ensemble import run_all_strategies
-    predictions = run_all_strategies(features, current_regime, models)
+    # Create composite regime descriptor
+    current_regime = f"{latest_regime['trend_regime']}_{latest_regime['vol_regime']}"
+
+    # Get predictions using primary and meta models
+    primary_model = models['primary_model']
+    meta_model = models['meta_model']
+
+    # Get latest features
+    latest_features = features.iloc[-1:]
+
+    # Primary prediction
+    primary_pred = primary_model.predict(latest_features)[0]
+
+    # Meta prediction (confidence)
+    X_meta = latest_features.copy()
+    X_meta['primary_pred'] = primary_pred
+    meta_confidence = meta_model.predict_proba(X_meta)[0][1]
 
     # Return results
     return {
         'symbol': symbol,
-        'final_position': predictions[0].side if predictions else 0,
-        'confidence': predictions[0].meta_probability if predictions else 0.5,
-        'active_strategies': [p.strategy_name for p in predictions],
+        'final_position': float(primary_pred),
+        'confidence': float(meta_confidence),
+        'active_strategies': list(models['strategy_models'].keys()),
         'regime': current_regime
     }
 
