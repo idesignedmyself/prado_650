@@ -13,13 +13,14 @@ from .technical import get_technical_features
 
 def build_feature_matrix(
     df: pd.DataFrame,
+    events: Optional[pd.DatetimeIndex] = None,
     include_microstructure: bool = True,
     include_technical: bool = True,
     include_volatility: bool = True,
     frac_diff_d: float = 0.4
 ) -> pd.DataFrame:
     """
-    Build complete feature matrix for PRADO9.
+    Build complete feature matrix for PRADO9 at event timestamps.
 
     Creates 19 core features:
     1. Fractionally differentiated price
@@ -29,14 +30,16 @@ def build_feature_matrix(
 
     Args:
         df: DataFrame with OHLCV data
+        events: Event timestamps (CUSUM-filtered). If None, uses df.index
         include_microstructure: Include microstructure features
         include_technical: Include technical features
         include_volatility: Include volatility features
         frac_diff_d: Fractional differentiation order
 
     Returns:
-        DataFrame with complete feature matrix
+        DataFrame with complete feature matrix at event timestamps
     """
+    # Build features on full dataset first
     features = pd.DataFrame(index=df.index)
 
     # 1. Fractionally differentiated price (stationary)
@@ -73,10 +76,25 @@ def build_feature_matrix(
     # Remove NaN rows - use threshold to keep rows with some valid features
     # Instead of dropna() which removes ALL rows with ANY NaN,
     # use forward fill for NaN values (common for rolling window features)
-    features = features.fillna(method='ffill').fillna(method='bfill')
+    features = features.ffill().bfill()
 
     # Only drop rows where ALL features are NaN
     features = features.dropna(how='all')
+
+    # If events specified, extract features only at event timestamps
+    if events is not None:
+        # Get overlap between features and events
+        valid_events = events.intersection(features.index)
+
+        if len(valid_events) == 0:
+            raise ValueError(
+                f"No overlap between events ({len(events)}) and features ({len(features)}). "
+                f"Events range: {events[0]} to {events[-1]}, "
+                f"Features range: {features.index[0]} to {features.index[-1]}"
+            )
+
+        features = features.loc[valid_events]
+        print(f"  Features extracted at {len(features)} event timestamps")
 
     return features
 

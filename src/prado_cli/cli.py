@@ -48,19 +48,17 @@ def train(
 
         typer.echo("\n✅ Training completed successfully!")
 
-        # Display metrics
-        typer.echo("\n📊 Primary Model Metrics:")
-        metrics = results['primary_metrics']
-        typer.echo(f"  CV Score: {metrics['cv_mean']:.4f} ± {metrics['cv_std']:.4f}")
-        typer.echo(f"  Samples: {metrics['n_samples']}")
-        typer.echo(f"  Features: {metrics['n_features']}")
+        # Display metrics for per-regime models
+        if 'regime_metrics' in results:
+            typer.echo(f"\n📊 Per-Regime Model Summary:")
+            typer.echo(f"  Total models trained: {results['total_models']}")
 
-        if 'meta_metrics' in results:
-            typer.echo("\n📊 Meta Model Metrics:")
-            meta = results['meta_metrics']
-            typer.echo(f"  Accuracy: {meta['accuracy']:.4f}")
-            typer.echo(f"  Precision: {meta['precision']:.4f}")
-            typer.echo(f"  F1 Score: {meta['f1']:.4f}")
+            for (strategy, regime), metrics in results['regime_metrics'].items():
+                typer.echo(f"\n  {strategy}_{regime}:")
+                pm = metrics['primary']
+                typer.echo(f"    Primary CV: {pm['cv_mean']:.4f} ± {pm['cv_std']:.4f}")
+                typer.echo(f"    Meta accuracy: {metrics['meta']['accuracy']:.4f}")
+                typer.echo(f"    Samples: {metrics['n_samples']}")
 
         typer.echo(f"\n💾 Models saved to: ~/.prado/models/{symbol}/")
 
@@ -75,28 +73,30 @@ def predict(
     show_all: bool = typer.Option(False, "--show-all", help="Show all strategy details")
 ):
     """
-    Get ensemble prediction for a symbol.
+    Get AFML ensemble prediction for a symbol.
 
     Example:
         prado predict QQQ
         prado predict SPY --show-all
     """
-    typer.echo(f"🔮 Generating predictions for {symbol.upper()}...")
-
     try:
         # Generate predictions
         result = predict_ensemble(symbol=symbol)
 
         typer.echo("\n✅ Prediction completed!")
+        typer.echo(f"\n📊 AFML Prediction Results:")
         typer.echo(f"   Symbol: {symbol.upper()}")
-        typer.echo(f"   Final Position: {result['final_position']:.2f}")
+        typer.echo(f"   Regime: {result['regime']}")
+        typer.echo(f"   Signal: {result['signal']:.0f} ({'LONG' if result['signal'] > 0 else 'SHORT' if result['signal'] < 0 else 'NEUTRAL'})")
+        typer.echo(f"   Position Size: {result['position_size']:.2%}")
         typer.echo(f"   Confidence: {result['confidence']:.2%}")
-        typer.echo(f"   Active Strategies: {len(result['active_strategies'])}")
+        typer.echo(f"   Active Strategies: {result['num_selected']}/{result['num_strategies']}")
 
-        if show_all and 'active_strategies' in result:
-            typer.echo("\n📊 Strategy Breakdown:")
-            for strategy in result['active_strategies']:
-                typer.echo(f"   - {strategy}")
+        if show_all and 'strategy_votes' in result:
+            typer.echo("\n📊 Strategy Votes:")
+            for strategy, vote in result['strategy_votes'].items():
+                selected = "✓" if strategy in result['active_strategies'] else " "
+                typer.echo(f"   [{selected}] {strategy}: {vote:.0f}")
 
     except Exception as e:
         typer.echo(f"\n❌ Error during prediction: {e}", err=True)

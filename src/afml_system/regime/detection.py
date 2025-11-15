@@ -309,6 +309,32 @@ def detect_all_regimes(df: pd.DataFrame) -> pd.DataFrame:
     return detector.detect(df)
 
 
+def detect_current_regime(df: pd.DataFrame) -> str:
+    """
+    Detect current market regime (most recent bar).
+
+    Args:
+        df: DataFrame with OHLCV data
+
+    Returns:
+        Regime string: TREND, MEANREV, or VOLCRUSH
+    """
+    regimes = detect_all_regimes(df)
+    latest = regimes.iloc[-1]
+
+    # Create composite regime label
+    trend = latest['trend_regime']
+    vol = latest['vol_regime']
+
+    # Map to 3 canonical regimes
+    if trend == 'trending':
+        return 'TREND'
+    elif vol == 'high_vol':
+        return 'VOLCRUSH'
+    else:
+        return 'MEANREV'
+
+
 def get_current_regime(
     df: pd.DataFrame,
     lookback: int = 1

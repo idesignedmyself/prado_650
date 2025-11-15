@@ -72,19 +72,18 @@ def train_ensemble(
 
     results = {}
 
-    # Step 1: Fetch data
-    print("\n[1/8] Fetching market data...")
-    df = prepare_training_data(symbol, start_date, end_date)
-    print(f"  {symbol}: {len(df)} bars")
+    # Step 1: Fetch data with CUSUM filtering
+    print("\n[1/8] Fetching market data with CUSUM filter...")
+    df, events = prepare_training_data(symbol, start_date, end_date, use_cusum=True)
+    print(f"  {symbol}: {len(df)} bars, {len(events)} events")
 
-    # Step 2: Build features
+    # Step 2: Build features at event timestamps
     print("\n[2/8] Building features...")
-    features = build_feature_matrix(df)
+    features = build_feature_matrix(df, events=events)
     print(f"  Features shape: {features.shape}")
 
-    # Step 3: Generate labels
+    # Step 3: Generate labels at event timestamps
     print("\n[3/8] Generating labels...")
-    events = df.index
     labels = triple_barrier_labels(
         df['Close'],
         events,
@@ -93,107 +92,138 @@ def train_ensemble(
     )
     print(f"  Labels generated: {len(labels)}")
 
-    # Step 4: Detect regimes
+    # Step 4: Detect regimes and assign to events
     print("\n[4/8] Detecting regimes...")
-    regimes = detect_all_regimes(df)
-    print(f"  Regimes detected: {regimes.shape}")
+    all_regimes = detect_all_regimes(df)
 
-    # Step 5: Train primary model
-    print("\n[5/8] Training primary model...")
+    # Map regimes to canonical names
+    from .regime.detection import detect_current_regime
+    regime_series = pd.Series(index=df.index, dtype=str)
+    for idx in df.index:
+        trend = all_regimes.loc[idx, 'trend_regime']
+        vol = all_regimes.loc[idx, 'vol_regime']
+        if trend == 'trending':
+            regime_series.loc[idx] = 'TREND'
+        elif vol == 'high_vol':
+            regime_series.loc[idx] = 'VOLCRUSH'
+        else:
+            regime_series.loc[idx] = 'MEANREV'
 
-    # Align data
+    # Get regimes at event timestamps
+    event_regimes = regime_series.loc[events]
+    regime_counts = event_regimes.value_counts()
+    print(f"  Regime distribution:")
+    for regime, count in regime_counts.items():
+        print(f"    {regime}: {count} samples ({count/len(event_regimes)*100:.1f}%)")
+
+    # Align features and labels
     idx = features.index.intersection(labels.index)
     X = features.loc[idx]
     y = labels.loc[idx, 'label']
+    regimes_aligned = event_regimes.loc[idx]
 
-    # Get sample weights
-    sample_weights = get_sample_weights(labels, df['Close'], method='return')
+    # Step 5-7: Train per-regime models
+    print("\n[5-7/8] Training per-regime strategy models...")
 
-    primary_model, primary_metrics = train_primary_model(
-        X, y,
-        sample_weight=sample_weights,
-        samples_info_sets=labels['t1'],
-        model_type=config['model_type'],
-        cv_folds=config['cv_folds']
-    )
-
-    print(f"  Primary model CV score: {primary_metrics['cv_mean']:.4f} +/- {primary_metrics['cv_std']:.4f}")
-    results['primary_model'] = primary_model
-    results['primary_metrics'] = primary_metrics
-
-    # Step 6: Train meta-model
-    print("\n[6/8] Training meta-model...")
-
-    # Get primary predictions
-    primary_pred = pd.Series(primary_model.predict(X), index=X.index)
-
-    # Create meta-features
-    X_meta = X.copy()
-    X_meta['primary_pred'] = primary_pred
-
-    # Meta-labels (whether prediction was correct)
-    y_meta = ((primary_pred * y) > 0).astype(int)
-
-    meta_model, meta_metrics = train_meta_model(X_meta, y_meta)
-
-    print(f"  Meta-model accuracy: {meta_metrics['accuracy']:.4f}")
-    results['meta_model'] = meta_model
-    results['meta_metrics'] = meta_metrics
-
-    # Step 7: Train strategy models
-    print("\n[7/8] Training strategy models...")
-
-    # For demonstration, create simple strategy-specific features
     from .strategies.momentum import MomentumStrategy
     from .strategies.mean_reversion import MeanReversionStrategy
     from .strategies.volatility import VolatilityStrategy
 
-    strategy_features = {}
-    strategy_labels = {}
+    strategies = {
+        'momentum': MomentumStrategy(),
+        'mean_reversion': MeanReversionStrategy(),
+        'volatility': VolatilityStrategy()
+    }
 
-    momentum_strategy = MomentumStrategy()
-    strategy_features['momentum'] = momentum_strategy.calculate_features(df).loc[idx]
-    strategy_labels['momentum'] = y
+    # Train models for each (strategy, regime) combination
+    regime_models = {}
+    regime_metrics = {}
+    min_samples = 20  # Minimum samples per regime
 
-    mean_rev_strategy = MeanReversionStrategy()
-    strategy_features['mean_reversion'] = mean_rev_strategy.calculate_features(df).loc[idx]
-    strategy_labels['mean_reversion'] = y
+    for regime in ['TREND', 'MEANREV', 'VOLCRUSH']:
+        regime_mask = (regimes_aligned == regime)
+        n_regime_samples = regime_mask.sum()
 
-    vol_strategy = VolatilityStrategy()
-    strategy_features['volatility'] = vol_strategy.calculate_features(df).loc[idx]
-    strategy_labels['volatility'] = y
+        if n_regime_samples < min_samples:
+            print(f"\n  ⚠️ Skipping {regime} ({n_regime_samples} samples < {min_samples})")
+            continue
 
-    strategy_models_dict = train_strategy_models(
-        strategy_features,
-        strategy_labels,
-        model_type='rf'
-    )
+        print(f"\n  Regime: {regime} ({n_regime_samples} samples)")
 
-    results['strategy_models'] = {name: model for name, (model, _) in strategy_models_dict.items()}
-    results['strategy_metrics'] = {name: metrics for name, (_, metrics) in strategy_models_dict.items()}
+        X_regime = X[regime_mask]
+        y_regime = y[regime_mask]
 
-    # Step 8: Save models
-    print("\n[8/8] Saving models...")
-    from .models.persistence import save_ensemble
+        for strategy_name, strategy in strategies.items():
+            print(f"    Training {strategy_name}_{regime}...")
 
-    ensemble_path = save_ensemble(
+            try:
+                # Build strategy-specific features
+                strategy_features = strategy.calculate_features(df)
+                X_strategy = strategy_features.loc[X_regime.index]
+
+                # Get sample weights
+                labels_regime = labels.loc[X_regime.index]
+                sample_weights = get_sample_weights(labels_regime, df['Close'], method='return')
+
+                # Train primary model
+                primary_model, primary_metrics = train_primary_model(
+                    X_strategy, y_regime,
+                    sample_weight=sample_weights,
+                    samples_info_sets=labels_regime['t1'],
+                    model_type=config['model_type'],
+                    cv_folds=min(config['cv_folds'], n_regime_samples // 10)
+                )
+
+                # Train meta model
+                primary_pred = pd.Series(primary_model.predict(X_strategy), index=X_strategy.index)
+                X_meta = X_strategy.copy()
+                X_meta['primary_pred'] = primary_pred
+                y_meta = ((primary_pred * y_regime) > 0).astype(int)
+
+                meta_model, meta_metrics = train_meta_model(X_meta, y_meta)
+
+                # Store models with (strategy, regime) key
+                key = (strategy_name, regime)
+                regime_models[key] = {
+                    'primary': primary_model,
+                    'meta': meta_model,
+                    'strategy_obj': strategy
+                }
+                regime_metrics[key] = {
+                    'primary': primary_metrics,
+                    'meta': meta_metrics,
+                    'n_samples': n_regime_samples
+                }
+
+                print(f"      ✓ Primary CV: {primary_metrics['cv_mean']:.4f} ± {primary_metrics['cv_std']:.4f}")
+                print(f"      ✓ Meta accuracy: {meta_metrics['accuracy']:.4f}")
+
+            except Exception as e:
+                print(f"      ❌ Error: {e}")
+                continue
+
+    results['regime_models'] = regime_models
+    results['regime_metrics'] = regime_metrics
+    results['total_models'] = len(regime_models)
+
+    # Step 8: Save per-regime models
+    print(f"\n[8/8] Saving models ({results['total_models']} total)...")
+    from .models.persistence import save_regime_ensemble
+
+    ensemble_path = save_regime_ensemble(
         symbol=symbol,
-        primary_model=primary_model,
-        meta_model=meta_model,
-        strategy_models=results['strategy_models'],
-        primary_metrics=primary_metrics,
-        meta_metrics=meta_metrics,
-        strategy_metrics=results['strategy_metrics']
+        regime_models=results['regime_models'],
+        regime_metrics=results['regime_metrics']
     )
 
     print(f"  ✅ Models saved to: {ensemble_path}")
-    print(f"  - Primary model")
-    print(f"  - Meta model")
-    print(f"  - {len(results['strategy_models'])} strategy models")
+    for (strategy, regime) in results['regime_models'].keys():
+        print(f"    - {strategy}_{regime}")
 
     print("\n" + "=" * 60)
     print("TRAINING COMPLETE")
     print("=" * 60)
+    print(f"Total models: {results['total_models']}")
 
     return results
 
@@ -202,7 +232,17 @@ def predict_ensemble(
     symbol: str
 ) -> Dict[str, Any]:
     """
-    Generate ensemble predictions for a symbol.
+    Generate AFML-compliant ensemble predictions for a symbol.
+
+    Full pipeline:
+    1. Fetch data with CUSUM filtering
+    2. Build features at events
+    3. Detect current regime
+    4. Load regime-specific models
+    5. Run all strategies
+    6. Thompson Sampling selection
+    7. Ensemble aggregation
+    8. Dynamic bet sizing
 
     Args:
         symbol: Symbol to predict
@@ -210,50 +250,145 @@ def predict_ensemble(
     Returns:
         Dictionary with prediction results
     """
-    from .models.persistence import load_ensemble
+    from .models.persistence import load_regime_ensemble
+    from .regime.detection import detect_current_regime
+    from .strategies.bandit import ThompsonSamplingBandit
+    from .strategies.ensemble import aggregate_strategy_predictions, Prediction
+    from .allocation.hybrid_allocator import HybridAllocator
     from datetime import datetime, timedelta
 
-    # Load models
-    models = load_ensemble(symbol)
-    if not models:
-        raise ValueError(f"No trained models found for {symbol}. Run 'prado train {symbol}' first.")
+    print(f"🔮 Generating AFML predictions for {symbol}...")
 
-    # Fetch recent data
+    # Step 1: Fetch recent data with CUSUM
     end_date = datetime.now()
     start_date = end_date - timedelta(days=100)
-    data = prepare_training_data(symbol, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
-    # Build features
-    features = build_feature_matrix(data)
+    data, events = prepare_training_data(
+        symbol,
+        start_date.strftime('%Y-%m-%d'),
+        end_date.strftime('%Y-%m-%d'),
+        use_cusum=True
+    )
 
-    # Detect current regime
-    regimes = detect_all_regimes(data)
-    latest_regime = regimes.iloc[-1]
+    # Step 2: Build features
+    features = build_feature_matrix(data, events=events)
 
-    # Create composite regime descriptor
-    current_regime = f"{latest_regime['trend_regime']}_{latest_regime['vol_regime']}"
+    # Step 3: Detect current regime
+    current_regime = detect_current_regime(data)
+    print(f"  Current regime: {current_regime}")
 
-    # Get predictions using primary and meta models
-    primary_model = models['primary_model']
-    meta_model = models['meta_model']
+    # Step 4: Load per-regime models
+    ensemble = load_regime_ensemble(symbol)
+    if not ensemble:
+        raise ValueError(f"No trained models found for {symbol}. Run 'prado train {symbol}' first.")
 
-    # Get latest features
+    regime_models = ensemble['regime_models']
+
+    # Filter models for current regime
+    active_models = {
+        strategy: model_dict
+        for (strategy, regime), model_dict in regime_models.items()
+        if regime == current_regime
+    }
+
+    if not active_models:
+        raise ValueError(f"No models trained for regime {current_regime}")
+
+    print(f"  Active strategies: {list(active_models.keys())}")
+
+    # Step 5: Run all strategies and generate predictions
+    from .strategies.momentum import MomentumStrategy
+    from .strategies.mean_reversion import MeanReversionStrategy
+    from .strategies.volatility import VolatilityStrategy
+
+    strategy_objects = {
+        'momentum': MomentumStrategy(),
+        'mean_reversion': MeanReversionStrategy(),
+        'volatility': VolatilityStrategy()
+    }
+
+    all_predictions = []
     latest_features = features.iloc[-1:]
 
-    # Primary prediction
-    primary_pred = primary_model.predict(latest_features)[0]
+    for strategy_name, model_dict in active_models.items():
+        try:
+            # Build strategy-specific features
+            strategy_obj = strategy_objects[strategy_name]
+            strategy_features = strategy_obj.calculate_features(data)
+            latest_strategy_features = strategy_features.iloc[-1:]
 
-    # Meta prediction (confidence)
-    X_meta = latest_features.copy()
-    X_meta['primary_pred'] = primary_pred
-    meta_confidence = meta_model.predict_proba(X_meta)[0][1]
+            # Primary prediction
+            primary_model = model_dict['primary']
+            primary_pred = primary_model.predict(latest_strategy_features)[0]
+            primary_proba = primary_model.predict_proba(latest_strategy_features)[0]
 
-    # Return results
+            # Meta prediction (confidence)
+            meta_model = model_dict['meta']
+            X_meta = latest_strategy_features.copy()
+            X_meta['primary_pred'] = primary_pred
+            meta_proba = meta_model.predict_proba(X_meta)[0][1]
+
+            # Create Prediction object
+            pred = Prediction(
+                strategy_name=strategy_name,
+                side=float(primary_pred),
+                probability=float(primary_proba[1] if len(primary_proba) > 1 else 0.5),
+                meta_probability=float(meta_proba),
+                regime=current_regime
+            )
+
+            all_predictions.append(pred)
+            print(f"    {strategy_name}: side={pred.side:.0f}, prob={pred.probability:.3f}, meta={pred.meta_probability:.3f}")
+
+        except Exception as e:
+            print(f"    ⚠️ {strategy_name} failed: {e}")
+            continue
+
+    if not all_predictions:
+        raise ValueError("No strategy predictions generated")
+
+    # Step 6: Thompson Sampling - select best strategies
+    try:
+        bandit = ThompsonSamplingBandit.load(symbol)
+        selected_predictions = bandit.select_strategies(
+            all_predictions,
+            regime=current_regime,
+            n_select=min(3, len(all_predictions))
+        )
+        print(f"  Thompson Sampling selected: {[p.strategy_name for p in selected_predictions]}")
+    except:
+        # If bandit not available, use all predictions
+        selected_predictions = all_predictions
+        print(f"  Using all strategies (bandit not available)")
+
+    # Step 7: Aggregate predictions (conflict-aware)
+    ensemble_signal = aggregate_strategy_predictions(
+        selected_predictions,
+        method='conflict_aware'
+    )
+
+    print(f"  Ensemble signal: side={ensemble_signal.side:.0f}, confidence={ensemble_signal.meta_probability:.3f}")
+
+    # Step 8: Dynamic bet sizing
+    allocator = HybridAllocator(max_position_size=1.0)
+    position_size = allocator.calculate_position_size(
+        signal=ensemble_signal.side,
+        confidence=ensemble_signal.meta_probability,
+        current_volatility=0.02  # Default 2% volatility
+    )
+
+    print(f"  Position size: {position_size:.3f}")
+
+    # Return AFML-compliant result
     return {
         'symbol': symbol,
-        'final_position': float(primary_pred),
-        'confidence': float(meta_confidence),
-        'active_strategies': list(models['strategy_models'].keys()),
-        'regime': current_regime
+        'regime': current_regime,
+        'signal': float(ensemble_signal.side),
+        'position_size': float(position_size),
+        'confidence': float(ensemble_signal.meta_probability),
+        'active_strategies': [p.strategy_name for p in selected_predictions],
+        'strategy_votes': {p.strategy_name: p.side for p in all_predictions},
+        'num_strategies': len(all_predictions),
+        'num_selected': len(selected_predictions)
     }
 
 

@@ -28,6 +28,26 @@ class StrategyPrediction:
         }
 
 
+@dataclass
+class Prediction:
+    """AFML prediction with meta-labeling."""
+    strategy_name: str
+    side: float  # -1, 0, or 1
+    probability: float  # Primary model probability
+    meta_probability: float  # Meta model confidence
+    regime: str
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary."""
+        return {
+            'strategy': self.strategy_name,
+            'side': self.side,
+            'probability': self.probability,
+            'meta_probability': self.meta_probability,
+            'regime': self.regime
+        }
+
+
 def run_all_strategies(
     df: pd.DataFrame,
     strategy_models: Dict,
@@ -82,24 +102,56 @@ def run_all_strategies(
 
 
 def aggregate_strategy_predictions(
-    predictions: List[StrategyPrediction],
+    predictions: List,
     method: str = 'weighted_average'
-) -> StrategyPrediction:
+):
     """
     Aggregate predictions from multiple strategies.
 
     Args:
-        predictions: List of strategy predictions
-        method: Aggregation method ('weighted_average', 'majority_vote', 'best_confidence')
+        predictions: List of Prediction or StrategyPrediction objects
+        method: Aggregation method ('weighted_average', 'majority_vote', 'conflict_aware')
 
     Returns:
-        Aggregated StrategyPrediction
+        Aggregated Prediction object
     """
     if not predictions:
-        return StrategyPrediction(
+        return Prediction(
             strategy_name='ensemble',
-            signal=0.0,
-            confidence=0.0
+            side=0.0,
+            probability=0.0,
+            meta_probability=0.0,
+            regime=''
+        )
+
+    # Handle conflict-aware aggregation
+    if method == 'conflict_aware':
+        # Check for conflicting signals
+        sides = [p.side for p in predictions]
+        unique_sides = set(sides)
+
+        if len(unique_sides) > 1:
+            # Conflict detected - reduce confidence
+            conflict_penalty = 0.5
+        else:
+            # Agreement - boost confidence
+            conflict_penalty = 1.0
+
+        # Weight by meta probability
+        total_weight = sum(p.meta_probability for p in predictions)
+        if total_weight > 0:
+            weighted_side = sum(p.side * p.meta_probability for p in predictions) / total_weight
+            avg_meta_prob = (sum(p.meta_probability for p in predictions) / len(predictions)) * conflict_penalty
+        else:
+            weighted_side = 0.0
+            avg_meta_prob = 0.0
+
+        return Prediction(
+            strategy_name='ensemble',
+            side=weighted_side,
+            probability=sum(p.probability for p in predictions) / len(predictions),
+            meta_probability=avg_meta_prob,
+            regime=predictions[0].regime if predictions else ''
         )
 
     if method == 'weighted_average':

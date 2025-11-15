@@ -6,7 +6,7 @@ import os
 import json
 import pickle
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 from datetime import datetime
 import joblib
 
@@ -403,3 +403,90 @@ def delete_ensemble(symbol: str):
     models_dir = get_prado_home() / "models"
     persistence = ModelPersistence(models_dir=str(models_dir))
     persistence.delete_model(symbol)
+
+
+def save_regime_ensemble(
+    symbol: str,
+    regime_models: Dict[Tuple[str, str], Dict],
+    regime_metrics: Dict[Tuple[str, str], Dict]
+) -> str:
+    """
+    Save per-regime ensemble models.
+
+    Args:
+        symbol: Trading symbol
+        regime_models: Dict of (strategy, regime) -> {primary, meta, strategy_obj}
+        regime_metrics: Dict of (strategy, regime) -> {primary, meta, n_samples}
+
+    Returns:
+        Path to saved ensemble
+    """
+    models_dir = get_prado_home() / "models"
+    persistence = ModelPersistence(models_dir=str(models_dir))
+
+    # Create models dictionary
+    models = {}
+    for (strategy, regime), model_dict in regime_models.items():
+        key = f"{strategy}_{regime}"
+        models[f"{key}_primary"] = model_dict['primary']
+        models[f"{key}_meta"] = model_dict['meta']
+
+    # Sanitize metrics
+    clean_metrics = {}
+    for (strategy, regime), metrics in regime_metrics.items():
+        key = f"{strategy}_{regime}"
+        clean_metrics[key] = _sanitize_metrics(metrics)
+
+    # Create metadata
+    metadata = {
+        'symbol': symbol,
+        'regime_metrics': clean_metrics,
+        'model_keys': [(s, r) for s, r in regime_models.keys()],
+        'total_models': len(regime_models)
+    }
+
+    # Save ensemble
+    persistence.save_ensemble_models(models, symbol, metadata)
+
+    ensemble_path = models_dir / symbol
+    return str(ensemble_path)
+
+
+def load_regime_ensemble(symbol: str) -> Optional[Dict[str, Any]]:
+    """
+    Load per-regime ensemble models.
+
+    Args:
+        symbol: Trading symbol
+
+    Returns:
+        Dictionary with loaded models and metadata, or None if not found
+    """
+    models_dir = get_prado_home() / "models"
+    persistence = ModelPersistence(models_dir=str(models_dir))
+
+    try:
+        # Load ensemble models
+        models = persistence.load_ensemble_models(symbol)
+
+        # Load metadata
+        metadata = persistence.load_metadata(symbol)
+
+        # Reconstruct regime models
+        regime_models = {}
+        model_keys = metadata.get('model_keys', [])
+
+        for strategy, regime in model_keys:
+            key = f"{strategy}_{regime}"
+            regime_models[(strategy, regime)] = {
+                'primary': models.get(f"{key}_primary"),
+                'meta': models.get(f"{key}_meta")
+            }
+
+        return {
+            'regime_models': regime_models,
+            'metadata': metadata
+        }
+
+    except FileNotFoundError:
+        return None

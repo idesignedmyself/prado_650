@@ -90,10 +90,12 @@ def prepare_training_data(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     interval: str = "1d",
-    lookback_days: int = 365
-) -> pd.DataFrame:
+    lookback_days: int = 365,
+    use_cusum: bool = True,
+    cusum_threshold: Optional[float] = None
+) -> tuple[pd.DataFrame, pd.DatetimeIndex]:
     """
-    Prepare data for training with automatic date handling.
+    Prepare data for training with CUSUM event filtering.
 
     Args:
         symbols: Symbol or list of symbols
@@ -101,9 +103,11 @@ def prepare_training_data(
         end_date: End date (if None, uses today)
         interval: Data interval
         lookback_days: Days to look back if start_date is None
+        use_cusum: Apply CUSUM filter for event-based sampling
+        cusum_threshold: CUSUM threshold (if None, uses daily volatility)
 
     Returns:
-        Prepared DataFrame with simple (non-MultiIndex) columns
+        Tuple of (data DataFrame, event timestamps)
     """
     if end_date is None:
         end_date = datetime.now().strftime('%Y-%m-%d')
@@ -121,7 +125,23 @@ def prepare_training_data(
     # Clean data
     data = data.dropna()
 
-    return data
+    # Apply CUSUM filtering if requested
+    if use_cusum:
+        from .cusum import cusum_filter
+        from ..labeling.triple_barrier import get_daily_volatility
+
+        if cusum_threshold is None:
+            # Use daily volatility as threshold
+            daily_vol = get_daily_volatility(data['Close'])
+            cusum_threshold = daily_vol.mean()
+
+        events = cusum_filter(data['Close'], threshold=cusum_threshold)
+        print(f"  CUSUM filter: {len(data)} bars → {len(events)} events ({len(events)/len(data)*100:.1f}% kept)")
+    else:
+        # Use all timestamps as events
+        events = data.index
+
+    return data, events
 
 
 def fetch_market_data_with_features(
