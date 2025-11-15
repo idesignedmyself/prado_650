@@ -62,7 +62,7 @@ def train(
             typer.echo(f"  Precision: {meta['precision']:.4f}")
             typer.echo(f"  F1 Score: {meta['f1']:.4f}")
 
-        typer.echo(f"\n💾 Models saved to: {models_dir}")
+        typer.echo(f"\n💾 Models saved to: ~/.prado/models/{symbol}/")
 
     except Exception as e:
         typer.echo(f"\n❌ Error during training: {e}", err=True)
