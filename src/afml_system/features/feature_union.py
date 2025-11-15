@@ -70,8 +70,13 @@ def build_feature_matrix(
         features['price_sma_ratio_20'] = df['Close'] / df['Close'].rolling(20).mean()
         features['stoch_k'] = _stochastic_k(df)
 
-    # Remove NaN rows
-    features = features.dropna()
+    # Remove NaN rows - use threshold to keep rows with some valid features
+    # Instead of dropna() which removes ALL rows with ANY NaN,
+    # use forward fill for NaN values (common for rolling window features)
+    features = features.fillna(method='ffill').fillna(method='bfill')
+
+    # Only drop rows where ALL features are NaN
+    features = features.dropna(how='all')
 
     return features
 
