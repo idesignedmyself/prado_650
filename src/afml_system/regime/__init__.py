@@ -1,0 +1,56 @@
+"""Regime detection module for PRADO9 system."""
+from .detection import (
+    TrendRegimeDetector,
+    VolatilityRegimeDetector,
+    VolumeRegimeDetector,
+    MicrostructureRegimeDetector,
+    CompositeRegimeDetector,
+    detect_all_regimes,
+    get_current_regime,
+)
+from .timeline import (
+    RegimeTimeline,
+    MultiRegimeTimeline,
+    build_regime_timeline,
+    get_regime_transitions,
+    analyze_regime_persistence,
+)
+from .helpers import (
+    calculate_adx,
+    calculate_ema_slope,
+    calculate_volume_zscore,
+    calculate_volatility_regime,
+    calculate_trend_strength,
+    calculate_price_acceleration,
+    calculate_regime_change_probability,
+    smooth_regime,
+    calculate_market_breadth,
+    calculate_regime_persistence,
+    get_regime_stats,
+)
+
+__all__ = [
+    'TrendRegimeDetector',
+    'VolatilityRegimeDetector',
+    'VolumeRegimeDetector',
+    'MicrostructureRegimeDetector',
+    'CompositeRegimeDetector',
+    'detect_all_regimes',
+    'get_current_regime',
+    'RegimeTimeline',
+    'MultiRegimeTimeline',
+    'build_regime_timeline',
+    'get_regime_transitions',
+    'analyze_regime_persistence',
+    'calculate_adx',
+    'calculate_ema_slope',
+    'calculate_volume_zscore',
+    'calculate_volatility_regime',
+    'calculate_trend_strength',
+    'calculate_price_acceleration',
+    'calculate_regime_change_probability',
+    'smooth_regime',
+    'calculate_market_breadth',
+    'calculate_regime_persistence',
+    'get_regime_stats',
+]
