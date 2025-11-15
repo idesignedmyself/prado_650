@@ -102,7 +102,7 @@ def prepare_training_data(
         lookback_days: Days to look back if start_date is None
 
     Returns:
-        Prepared DataFrame
+        Prepared DataFrame with simple (non-MultiIndex) columns
     """
     if end_date is None:
         end_date = datetime.now().strftime('%Y-%m-%d')
@@ -111,7 +111,18 @@ def prepare_training_data(
         start = datetime.now() - timedelta(days=lookback_days)
         start_date = start.strftime('%Y-%m-%d')
 
-    data = fetch_ohlcv(symbols, start_date, end_date, interval)
+    # Ensure symbols is a string for single symbol
+    if isinstance(symbols, list) and len(symbols) == 1:
+        symbols = symbols[0]
+
+    data = fetch_ohlcv(symbols, start_date, end_date, interval, progress=False)
+
+    # Extract single symbol data if MultiIndex
+    if isinstance(data.columns, pd.MultiIndex):
+        if isinstance(symbols, str):
+            data = data[symbols].copy()
+        else:
+            data = data[symbols[0]].copy()
 
     # Clean data
     data = data.dropna()
