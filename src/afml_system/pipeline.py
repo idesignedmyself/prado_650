@@ -426,7 +426,7 @@ def backtest_comprehensive(
 
     # Fetch data
     print("\n[1/4] Fetching data...")
-    df = prepare_training_data(symbol, start_date, end_date)
+    df, events = prepare_training_data(symbol, start_date, end_date)
     print(f"  {len(df)} bars loaded")
 
     # Run standard backtest
