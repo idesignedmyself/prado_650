@@ -106,28 +106,37 @@ def predict(
 @app.command()
 def backtest(
     symbol: str = typer.Argument(..., help="Symbol to backtest (e.g., SPY, QQQ)"),
-    comprehensive: bool = typer.Option(True, "--comprehensive", help="Run all 4 backtest methods"),
+    comprehensive: bool = typer.Option(False, "--comprehensive", help="Run all 4 backtest methods"),
     standard: bool = typer.Option(False, "--standard", help="Run standard backtest only"),
     walk_forward: bool = typer.Option(False, "--walk-forward", help="Run walk-forward optimization"),
     crisis: bool = typer.Option(False, "--crisis", help="Run crisis stress test"),
     monte_carlo: bool = typer.Option(False, "--monte-carlo", help="Run Monte Carlo analysis"),
+    debug: bool = typer.Option(False, "--debug", help="Print detailed prediction windows"),
     start: Optional[str] = typer.Option(None, "--start", help="Start date (YYYY-MM-DD)"),
 ):
     """
-    Run comprehensive backtest validation suite.
+    Run backtest validation with EXISTING trained models.
 
-    Example:
-        prado backtest QQQ --comprehensive
-        prado backtest SPY --standard
-        prado backtest QQQ --start 2020-01-01
+    Examples:
+        prado backtest QQQ --standard
+        prado backtest QQQ --walk-forward
+        prado backtest QQQ --crisis
+        prado backtest QQQ --monte-carlo
+        prado backtest QQQ --comprehensive (all 4)
+        prado backtest QQQ --standard --debug
     """
     typer.echo(f"📈 Starting backtest for {symbol.upper()}...")
 
+    # Determine which tests to run
+    run_all = comprehensive or not (standard or walk_forward or crisis or monte_carlo)
+
     try:
-        # Run comprehensive backtest
+        # Run backtest with selected modes
         report = backtest_comprehensive(
             symbol=symbol,
-            start_date=start
+            start_date=start,
+            mode='comprehensive' if run_all else 'standard' if standard else 'walk-forward' if walk_forward else 'crisis' if crisis else 'monte-carlo',
+            debug=debug
         )
 
         typer.echo("\n✅ Backtest completed!")

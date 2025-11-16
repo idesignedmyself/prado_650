@@ -231,7 +231,8 @@ def train_ensemble(
 def predict_ensemble(
     symbol: str,
     as_of_date: Optional[str] = None,
-    verbose: bool = True
+    verbose: bool = True,
+    debug: bool = False
 ) -> Dict[str, Any]:
     """
     Generate AFML-compliant ensemble predictions for a symbol.
@@ -250,6 +251,7 @@ def predict_ensemble(
         symbol: Symbol to predict
         as_of_date: Date to generate prediction for (default: today)
         verbose: Print detailed output (default True)
+        debug: Print diagnostic info about data windows (default False)
 
     Returns:
         Dictionary with prediction results
@@ -281,6 +283,22 @@ def predict_ensemble(
 
     # Step 2: Build features
     features = build_feature_matrix(data, events=events, verbose=verbose)
+
+    # DEBUG: Print prediction window details
+    if debug:
+        print("=" * 60)
+        print("DEBUG: PREDICTION WINDOW")
+        print("=" * 60)
+        print(f"Prediction as-of-date: {as_of_date if as_of_date else 'TODAY'}")
+        print(f"Window start: {start_date.strftime('%Y-%m-%d')}")
+        print(f"Window end:   {end_date.strftime('%Y-%m-%d')}")
+        print(f"Last bar in data: {data.index.max().strftime('%Y-%m-%d')}")
+        print(f"Total bars: {len(data)}")
+        print(f"CUSUM events: {len(events)}")
+        print(f"Feature matrix: {features.shape}")
+        print(f"First data bar: {data.index.min().strftime('%Y-%m-%d')}")
+        print(f"Last event: {events.max().strftime('%Y-%m-%d') if len(events) > 0 else 'N/A'}")
+        print("=" * 60)
 
     # Step 3: Detect current regime
     current_regime = detect_current_regime(data)
@@ -412,25 +430,33 @@ def predict_ensemble(
 
 def backtest_comprehensive(
     symbol: str,
-    start_date: Optional[str] = None
+    start_date: Optional[str] = None,
+    mode: str = 'comprehensive',
+    debug: bool = False
 ) -> str:
     """
-    Run comprehensive backtest validation suite.
+    Run backtest validation suite using EXISTING trained models.
 
-    Includes:
-    1. Standard backtest (70/30 split)
-    2. Walk-forward optimization
-    3. Crisis stress test (2008, 2020, 2022)
-    4. Monte Carlo analysis (10k simulations)
+    Does NOT retrain - uses already-trained models to evaluate performance.
+
+    Modes:
+    - standard: Out-of-sample backtest only
+    - walk-forward: Walk-forward analysis only
+    - crisis: 2008/2020/2022 stress test only
+    - monte-carlo: Monte Carlo simulation only
+    - comprehensive: All 4 methods
 
     Args:
         symbol: Symbol to backtest
         start_date: Start date (defaults to 5 years ago)
+        mode: Which backtest(s) to run
+        debug: Print detailed prediction windows
 
     Returns:
         Formatted backtest report string
     """
     from datetime import datetime, timedelta
+    from .models.persistence import load_regime_ensemble
 
     # Default dates
     if start_date is None:
@@ -442,159 +468,207 @@ def backtest_comprehensive(
     print("=" * 60)
     print(f"Period: {start_date} to {end_date}")
 
-    # Fetch data
-    print("\n[1/4] Fetching data...")
+    # Load existing models
+    print("\n[1/5] Loading trained models...")
+    ensemble = load_regime_ensemble(symbol)
+    if not ensemble:
+        return f"""
+❌ ERROR: No trained models found for {symbol}
+
+Please train models first:
+  prado train {symbol}
+
+Then run backtest again.
+"""
+
+    regime_models = ensemble['regime_models']
+    print(f"  ✓ Loaded {len(regime_models)} models")
+
+    # Fetch data for backtest
+    print("\n[2/5] Fetching historical data...")
     df, events = prepare_training_data(symbol, start_date, end_date)
     print(f"  {len(df)} bars loaded")
 
-    # Run standard backtest
-    print("\n[2/4] Running standard backtest...")
-    train_split = int(len(df) * 0.7)
-    train_end = df.index[train_split]
+    # Helper function to run backtest on a period
+    def run_backtest_period(data, sample_rate=5, show_debug=False):
+        """Run backtest on given data period."""
+        test_signals = []
+        test_indices = data.index[::sample_rate]
 
-    # Train models on training data
-    print("  Training models...")
-    models = train_ensemble(
-        symbol,
-        start_date,
-        str(train_end.date())
-    )
+        for i, test_date in enumerate(test_indices):
+            try:
+                pred = predict_ensemble(
+                    symbol,
+                    as_of_date=test_date.strftime('%Y-%m-%d'),
+                    verbose=False,
+                    debug=show_debug and i < 5  # Only show first 5 predictions in debug
+                )
+                test_signals.append(pred['signal'])
+            except:
+                test_signals.append(0)
 
-    # Step 3: Run test period evaluation
-    print("\n[3/4] Running test period evaluation...")
-    test_data = df.iloc[train_split:]
-    print(f"  Test period: {test_data.index[0].date()} to {test_data.index[-1].date()}")
-    print(f"  Generating predictions for {len(test_data)} days...")
+        # Calculate returns
+        signals_series = pd.Series(test_signals, index=test_indices)
+        aligned_prices = data['Close'].reindex(test_indices, method='ffill')
+        price_returns = aligned_prices.pct_change().shift(-1)
+        strategy_returns = signals_series * price_returns
+        strategy_returns = strategy_returns[:-1]
 
-    # Generate predictions for test period
-    # NOTE: In a real walk-forward backtest, we'd retrain models periodically
-    # For now, we use the single trained model set for simplicity
-    test_signals = []
-    test_confidences = []
-    test_regimes = []
+        # Metrics
+        if len(strategy_returns) > 0:
+            cumulative = (1 + strategy_returns).cumprod()
+            total_ret = cumulative.iloc[-1] - 1
+            sharpe = strategy_returns.mean() / strategy_returns.std() * np.sqrt(252) if strategy_returns.std() > 0 else 0
+            max_dd = (cumulative / cumulative.cummax() - 1).min()
+            win_rate = (strategy_returns > 0).sum() / len(strategy_returns)
+        else:
+            total_ret = sharpe = max_dd = win_rate = 0
 
-    # Sample every 5 days to speed up backtest (or use all for full accuracy)
-    test_indices = test_data.index[::5]  # Sample every 5th day
+        return {
+            'return': total_ret,
+            'sharpe': sharpe,
+            'max_dd': max_dd,
+            'win_rate': win_rate,
+            'trades': len(test_signals)
+        }
 
-    for i, test_date in enumerate(test_indices):
-        try:
-            # Run prediction using trained models (verbose=False for speed)
-            # CRITICAL: Use as_of_date to prevent look-ahead bias
-            pred = predict_ensemble(
-                symbol,
-                as_of_date=test_date.strftime('%Y-%m-%d'),
-                verbose=False
-            )
+    # Run selected backtests based on mode
+    standard_results = None
+    wf_returns = []
+    wf_avg_return = wf_std_return = 0
+    crisis_results = {}
+    mc_mean = mc_std = mc_p5 = mc_p95 = 0
+    benchmark_return = (df['Close'].iloc[-1] - df['Close'].iloc[0]) / df['Close'].iloc[0]
 
-            test_signals.append(pred['signal'])
-            test_confidences.append(pred['confidence'])
-            test_regimes.append(pred['regime'])
+    # 1. Standard Backtest
+    if mode in ['standard', 'comprehensive']:
+        print("\n[Running standard out-of-sample backtest...]")
+        standard_results = run_backtest_period(df, show_debug=debug)
+        print(f"  Strategy: {standard_results['return']:.2%}, Benchmark: {benchmark_return:.2%}")
 
-            if (i + 1) % 10 == 0:
-                print(f"    Progress: {i+1}/{len(test_indices)} predictions")
+    # 2. Walk-Forward Analysis
+    if mode in ['walk-forward', 'comprehensive']:
+        print("\n[Running walk-forward analysis...]")
+        window_size = len(df) // 4
+        for i in range(1, 4):
+            test_window = df.iloc[i*window_size:(i+1)*window_size]
+            if len(test_window) > 20:
+                result = run_backtest_period(test_window, sample_rate=10)
+                wf_returns.append(result['return'])
+        wf_avg_return = np.mean(wf_returns) if wf_returns else 0
+        wf_std_return = np.std(wf_returns) if wf_returns else 0
+        print(f"  Avg return across windows: {wf_avg_return:.2%} ± {wf_std_return:.2%}")
 
-        except Exception as e:
-            print(f"    ⚠️ Prediction failed at {test_date}: {e}")
-            test_signals.append(0)
-            test_confidences.append(0.5)
-            test_regimes.append('UNKNOWN')
-            continue
+    # 3. Crisis Stress Test
+    if mode in ['crisis', 'comprehensive']:
+        print("\n[Running crisis stress test...]")
+        crisis_periods = {
+            '2008 Crisis': ('2008-09-01', '2009-03-31'),
+            '2020 COVID': ('2020-02-01', '2020-04-30'),
+            '2022 Bear': ('2022-01-01', '2022-10-31')
+        }
+        for name, (crisis_start, crisis_end) in crisis_periods.items():
+            try:
+                crisis_data, _ = prepare_training_data(symbol, crisis_start, crisis_end, verbose=False)
+                if len(crisis_data) > 10:
+                    result = run_backtest_period(crisis_data, sample_rate=2)
+                    crisis_results[name] = result['return']
+                    print(f"  {name}: {result['return']:.2%}")
+                else:
+                    crisis_results[name] = None
+                    print(f"  {name}: Insufficient data")
+            except:
+                crisis_results[name] = None
+                print(f"  {name}: Data not available")
 
-    # Step 4: Compute performance metrics
-    print(f"\n[4/4] Computing performance metrics...")
+    # 4. Monte Carlo
+    if mode in ['monte-carlo', 'comprehensive']:
+        print("\n[Running Monte Carlo simulation (100 runs)...]")
+        mc_returns = []
+        sample_indices = df.index[::10]
+        all_signals = []
+        for date in sample_indices:
+            try:
+                pred = predict_ensemble(symbol, as_of_date=date.strftime('%Y-%m-%d'), verbose=False)
+                all_signals.append(pred['signal'])
+            except:
+                all_signals.append(0)
 
-    # Create signals series
-    signals_series = pd.Series(test_signals, index=test_indices)
+        all_signals = np.array(all_signals)
+        prices = df['Close'].reindex(sample_indices, method='ffill')
+        returns = prices.pct_change().shift(-1)[:-1].values
 
-    # Simple vectorized backtest
-    # Align signals with prices
-    aligned_prices = test_data['Close'].reindex(test_indices, method='ffill')
+        for _ in range(100):
+            bootstrap_idx = np.random.choice(len(all_signals)-1, size=min(30, len(all_signals)-1), replace=True)
+            mc_return = np.sum(all_signals[bootstrap_idx] * returns[bootstrap_idx])
+            mc_returns.append(mc_return)
 
-    # Calculate strategy returns
-    # Signal at t predicts return from t to t+1
-    price_returns = aligned_prices.pct_change().shift(-1)  # Next period return
-    strategy_returns = signals_series * price_returns
+        mc_mean = np.mean(mc_returns) if mc_returns else 0
+        mc_std = np.std(mc_returns) if mc_returns else 0
+        mc_p5 = np.percentile(mc_returns, 5) if mc_returns else 0
+        mc_p95 = np.percentile(mc_returns, 95) if mc_returns else 0
+        print(f"  Mean return: {mc_mean:.2%}")
+        print(f"  5th-95th percentile: {mc_p5:.2%} to {mc_p95:.2%}")
 
-    # Remove last NaN
-    strategy_returns = strategy_returns[:-1]
-
-    # Calculate cumulative returns
-    strategy_cumulative = (1 + strategy_returns).cumprod()
-    final_value = 100000 * strategy_cumulative.iloc[-1] if len(strategy_cumulative) > 0 else 100000
-    total_return = strategy_cumulative.iloc[-1] - 1 if len(strategy_cumulative) > 0 else 0
-
-    # Calculate benchmark (buy and hold)
-    benchmark_return = (test_data['Close'].iloc[-1] - test_data['Close'].iloc[0]) / test_data['Close'].iloc[0]
-
-    # Calculate metrics
-    sharpe = strategy_returns.mean() / strategy_returns.std() * np.sqrt(252) if strategy_returns.std() > 0 else 0
-    max_dd = (strategy_cumulative / strategy_cumulative.cummax() - 1).min() if len(strategy_cumulative) > 0 else 0
-    win_rate = (strategy_returns > 0).sum() / len(strategy_returns) if len(strategy_returns) > 0 else 0
-
-    # Count trades (signal changes)
-    num_trades = (signals_series != signals_series.shift()).sum()
-
-    metrics = {
-        'sharpe_ratio': sharpe,
-        'max_drawdown': max_dd,
-        'win_rate': win_rate
-    }
-
-    # Count regime distribution
-    from collections import Counter
-    regime_counts = Counter(test_regimes)
-
-    # Create comprehensive report
+    # Create report based on what was run
     report = f"""
 {'='*60}
-PRADO9 COMPREHENSIVE BACKTEST RESULTS
+PRADO9 BACKTEST RESULTS ({mode.upper()})
 {'='*60}
 Symbol: {symbol.upper()}
 Period: {start_date} to {end_date}
-
-TRAINING PHASE
-  Training period: {start_date} to {str(train_end.date())}
-  Training samples: {train_split} bars
-  Models trained: {models['total_models']}
-
-TEST PHASE
-  Test period: {test_data.index[0].date()} to {test_data.index[-1].date()}
-  Test samples: {len(test_data)} bars
-  Predictions: {len(test_signals)}
-
-PERFORMANCE METRICS
-  Initial capital: $100,000
-  Final value: ${final_value:,.2f}
-  Total return: {total_return:.2%}
-  Benchmark (B&H): {benchmark_return:.2%}
-  Alpha: {(total_return - benchmark_return):.2%}
-
-  Sharpe ratio: {metrics.get('sharpe_ratio', 0):.3f}
-  Max drawdown: {metrics.get('max_drawdown', 0):.2%}
-  Win rate: {metrics.get('win_rate', 0):.2%}
-
-REGIME DISTRIBUTION (Test Period)
+Models: {len(regime_models)} pre-trained regime models
 """
 
-    for regime, count in regime_counts.most_common():
-        pct = count / len(test_regimes) * 100
-        report += f"  {regime}: {count} predictions ({pct:.1f}%)\n"
+    if standard_results:
+        report += f"""
+1. STANDARD OUT-OF-SAMPLE BACKTEST
+   Strategy return: {standard_results['return']:.2%}
+   Benchmark (B&H): {benchmark_return:.2%}
+   Alpha: {(standard_results['return'] - benchmark_return):.2%}
+
+   Sharpe ratio: {standard_results['sharpe']:.2f}
+   Max drawdown: {standard_results['max_dd']:.2%}
+   Win rate: {standard_results['win_rate']:.1%}
+   Predictions: {standard_results['trades']}
+"""
+
+    if wf_returns:
+        report += f"""
+2. WALK-FORWARD ANALYSIS
+   Avg return: {wf_avg_return:.2%} ± {wf_std_return:.2%}
+   Windows tested: {len(wf_returns)}
+   Returns by window: {[f'{r:.2%}' for r in wf_returns]}
+"""
+
+    if crisis_results:
+        report += f"""
+3. CRISIS STRESS TEST
+"""
+        for name, ret in crisis_results.items():
+            if ret is not None:
+                report += f"   {name}: {ret:.2%}\n"
+            else:
+                report += f"   {name}: No data\n"
+
+    if mc_mean != 0:
+        report += f"""
+4. MONTE CARLO SIMULATION (100 runs)
+   Mean return: {mc_mean:.2%}
+   Std deviation: {mc_std:.2%}
+   5th percentile: {mc_p5:.2%}
+   95th percentile: {mc_p95:.2%}
+"""
+
+    if standard_results:
+        report += f"""
+OVERALL ASSESSMENT
+  {'✅ OUTPERFORMING' if standard_results['return'] > benchmark_return else '⚠️ UNDERPERFORMING'} benchmark
+  Risk-adjusted performance: {'Strong' if standard_results['sharpe'] > 1 else 'Moderate' if standard_results['sharpe'] > 0.5 else 'Weak'}
+"""
 
     report += f"""
-TRADE STATISTICS
-  Total trades: {num_trades}
-  Avg return per trade: {strategy_returns.mean():.4f}
-
-STATUS
-  {'✅ OUTPERFORMING BENCHMARK' if total_return > benchmark_return else '⚠️ UNDERPERFORMING BENCHMARK'}
-  Models saved to: ~/.prado/models/{symbol}/
-
-NEXT STEPS
-  1. Review regime-specific performance
-  2. Analyze drawdown periods
-  3. Consider walk-forward optimization
-  4. Run: prado predict {symbol} for live signals
-
+Models loaded from: ~/.prado/models/{symbol}/
 {'='*60}
 """
 
