@@ -17,7 +17,8 @@ def build_feature_matrix(
     include_microstructure: bool = True,
     include_technical: bool = True,
     include_volatility: bool = True,
-    frac_diff_d: float = 0.4
+    frac_diff_d: float = 0.4,
+    verbose: bool = True
 ) -> pd.DataFrame:
     """
     Build complete feature matrix for PRADO9 at event timestamps.
@@ -94,7 +95,8 @@ def build_feature_matrix(
             )
 
         features = features.loc[valid_events]
-        print(f"  Features extracted at {len(features)} event timestamps")
+        if verbose:
+            print(f"  Features extracted at {len(features)} event timestamps")
 
     return features
 

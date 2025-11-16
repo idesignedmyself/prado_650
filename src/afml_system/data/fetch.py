@@ -92,7 +92,8 @@ def prepare_training_data(
     interval: str = "1d",
     lookback_days: int = 365,
     use_cusum: bool = True,
-    cusum_threshold: Optional[float] = None
+    cusum_threshold: Optional[float] = None,
+    verbose: bool = True
 ) -> tuple[pd.DataFrame, pd.DatetimeIndex]:
     """
     Prepare data for training with CUSUM event filtering.
@@ -105,6 +106,7 @@ def prepare_training_data(
         lookback_days: Days to look back if start_date is None
         use_cusum: Apply CUSUM filter for event-based sampling
         cusum_threshold: CUSUM threshold (if None, uses daily volatility)
+        verbose: Print CUSUM filter stats (default True)
 
     Returns:
         Tuple of (data DataFrame, event timestamps)
@@ -136,7 +138,8 @@ def prepare_training_data(
             cusum_threshold = daily_vol.mean()
 
         events = cusum_filter(data['Close'], threshold=cusum_threshold)
-        print(f"  CUSUM filter: {len(data)} bars → {len(events)} events ({len(events)/len(data)*100:.1f}% kept)")
+        if verbose:
+            print(f"  CUSUM filter: {len(data)} bars → {len(events)} events ({len(events)/len(data)*100:.1f}% kept)")
     else:
         # Use all timestamps as events
         events = data.index
